@@ -1,5 +1,5 @@
 # API для мобильного приложения — OpenAPI
-1. Назначение API
+### 1. Назначение API
 Для мобильного приложения предоставляется безопасный API для получения пациентом списка его записей к врачам.
 
 Целевой контур:
@@ -19,7 +19,9 @@ Integration Layer
 API версионируется в URL:
 
 /api/v1/appointments
-2. OpenAPI 3.2
+
+### 2. OpenAPI 3.2
+```text   
 openapi: 3.2.0
 
 info:
@@ -344,6 +346,8 @@ components:
               type: string
               description: Идентификатор запроса для логов и distributed tracing.
               example: req-01J7XYZ123
+```
+
 3. Пагинация
 Для MVP используется offset-based pagination:
 
