@@ -20,79 +20,13 @@
 
 Ключевой принцип: **между системами не используется распределённая ACID-транзакция**. Каждая система выполняет локальную транзакцию, а Saga обеспечивает согласованность процесса с помощью компенсирующих действий.
 
----
-
-## 2. UML Sequence Diagram — успешный сценарий
-
-```plantuml
-@startuml
-title Здоровье+ — Запись к врачу с оплатой и резервированием лаборатории
-
-actor "Пациент" as Patient
-participant "Mobile App" as App
-participant "API Gateway" as Gateway
-participant "Booking Saga\nOrchestrator" as Saga
-participant "Policy Service /\n1С: Полисы Adapter" as Policy
-participant "Расписание" as Schedule
-participant "LIS Adapter" as LISAdapter
-participant "LIS" as LIS
-participant "Payment Adapter" as PayAdapter
-participant "Платёжный шлюз" as Payment
-participant "Notification Service" as Notify
-
-Patient -> App : Выбор врача, слота\nи анализа
-App -> Gateway : POST /booking\nIdempotency-Key
-Gateway -> Saga : Start Booking Saga
-
-note right of Gateway
-Idempotency-Key:
-уникальный ключ операции
-end note
-
-Saga -> Policy : Проверить полис
-Policy -> Policy : Проверка валидности
-Policy --> Saga : Policy valid
-
-Saga -> Schedule : Reserve doctor slot\nbookingId
-Schedule -> Schedule : Проверка доступности\n+ идемпотентная запись
-Schedule --> Saga : Slot reserved
-
-Saga -> LISAdapter : Reserve lab slot\nreservationId
-LISAdapter -> LIS : Reserve lab slot
-LIS --> LISAdapter : Lab slot reserved
-LISAdapter --> Saga : Lab slot reserved
-
-Saga -> PayAdapter : Create / authorize payment\npaymentId
-PayAdapter -> Payment : Payment request\nidempotency key
-Payment --> PayAdapter : Payment authorized
-PayAdapter --> Saga : Payment successful
-
-Saga -> Schedule : Confirm booking\nbookingId
-Schedule --> Saga : Booking confirmed
-
-Saga -> LISAdapter : Confirm lab reservation\nreservationId
-LISAdapter -> LIS : Confirm reservation
-LIS --> LISAdapter : Reservation confirmed
-LISAdapter --> Saga : Lab reservation confirmed
-
-Saga -> Notify : Publish BookingConfirmed
-Notify --> App : Push confirmation
-App --> Patient : Запись подтверждена\nОплата успешна\nЛаборатория зарезервирована
-
-Saga -> Saga : Saga COMPLETED
-
-@enduml
-```
-
----
-
-# 3. Почему выбран именно Orchestration-based Saga
+# 2. Почему выбран именно Orchestration-based Saga
 
 Для данного сценария предлагается **оркеструемый тип Saga**, поскольку бизнес-операция состоит из нескольких зависимых шагов: проверка полиса, резервирование слота врача, резервирование лаборатории и оплата. Оркестратор позволяет централизованно управлять состоянием Saga, порядком выполнения шагов, retry и компенсациями, что существенно упрощает эксплуатацию и диагностику по сравнению с распределённой choreography-схемой. Это особенно важно с учётом существующих проблем `INT-001`, `INT-003`, `INT-005` и `INT-009`, а также ошибок оплаты и дублирования записей из Service Desk. При этом Saga не требует распределённой транзакции между PostgreSQL, 1С, LIS и внешним платёжным шлюзом и поэтому лучше подходит для постепенной интеграции Legacy-систем.
 
 ---
 
-# 4. Почему не Choreography
+# 3. Почему не Choreography
 
 Choreography можно реализовать через цепочку событий:
 
@@ -120,7 +54,7 @@ BookingConfirmed
 
 ---
 
-# 5. Компенсирующие транзакции
+# 4. Компенсирующие транзакции
 
 | Шаг сценария | Компенсирующее действие | Риск, который устраняется |
 |---|---|---|
@@ -159,7 +93,7 @@ RefundPayment(paymentId)
 
 ---
 
-# 6. Поведение Saga при сбое
+# 5. Поведение Saga при сбое
 
 Например, если оплата не прошла:
 
@@ -204,7 +138,7 @@ GetPaymentStatus(paymentId)
 
 ---
 
-# 7. Механизм идемпотентности на входе
+# 6. Механизм идемпотентности на входе
 
 На входе в API Gateway необходимо использовать заголовок:
 
@@ -241,7 +175,7 @@ Idempotency-Key: ABC-123
 
 ---
 
-# 8. Idempotency Store
+# 7. Idempotency Store
 
 В API Gateway / Booking Orchestrator необходимо иметь хранилище идемпотентности.
 
@@ -289,7 +223,7 @@ UNIQUE(idempotency_key)
 
 ---
 
-# 9. Идемпотентность должна быть на каждом критичном шаге
+# 8. Идемпотентность должна быть на каждом критичном шаге
 
 Одного Idempotency-Key на API недостаточно.
 
@@ -353,7 +287,7 @@ paymentId / merchantTransactionId
 
 ---
 
-# 10. Состояния Saga
+# 9. Состояния Saga
 
 Рекомендуется хранить состояние Saga:
 
@@ -397,7 +331,7 @@ COMPENSATED
 
 ---
 
-# 11. Архитектурные гарантии
+# 10. Архитектурные гарантии
 
 | Проблема | Архитектурное решение |
 |---|---|
@@ -415,7 +349,7 @@ COMPENSATED
 
 ---
 
-# 12. Итоговая архитектура сценария
+# 11. Итоговая архитектура сценария
 
 ```text
                     ┌─────────────────┐
