@@ -32,50 +32,32 @@
 ### 2.1. 1С
 
 ```text
-Запрос проверки полиса
-|
-v
-Policy Service
-|
-Circuit Breaker
-|
-v
-1С
-|
-+-------------+-------------+
-| |
-SUCCESS timeout / 503
-| |
-v v
-Ответ Retry #1 через 1 сек
-|
-timeout / 503
-|
-v
-Retry #2 через 3 сек
-|
-timeout / 503
-|
-v
-Fallback
-
-```
-
-**Fallback:**
-
-```text
-Fallback
-|
-+---------+---------+
-| |
-Есть допустимый Кэш отсутствует
-cached result? или устарел
-| |
-Да Нет
-| |
-v v
-вернуть cached POLICY_CHECK_
-status UNAVAILABLE
+                    Запрос проверки полиса
+                              |
+                              v
+                         Policy Service
+                              |
+                         Circuit Breaker
+                              |
+                              v
+                             1С
+                              |
+                +-------------+-------------+
+                |                           |
+             SUCCESS                  timeout / 503
+                |                           |
+                v                           v
+             Ответ                  Retry #1 через 1 сек
+                                            |
+                                      timeout / 503
+                                            |
+                                            v
+                                   Retry #2 через 3 сек
+                                            |
+                                      timeout / 503
+                                            |
+                                            v
+                                         FallbackLE
 ```
 
 > **Важно:** использование кэша как fallback должно соответствовать бизнес-правилам. Если для конкретного сценария требуется обязательно актуальная проверка полиса, устаревший результат нельзя автоматически считать валидным.
@@ -87,16 +69,16 @@ status UNAVAILABLE
 Правильная схема отличается от 1С
 
 ```text
-POST /payment
-|
-v
-Payment Gateway
-|
-+---------+---------+
-| |
-SUCCESS TIMEOUT
-| |
-v v
+      POST /payment
+             |
+             v
+       Payment Gateway
+             |
+   +---------+---------+
+   |                   |
+SUCCESS              TIMEOUT
+   |                      |
+    v                     v
 PAID UNKNOWN RESULT
 |
 v
