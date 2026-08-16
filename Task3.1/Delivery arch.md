@@ -1,113 +1,210 @@
-# Выбор поставка результатов анализов в мобильное приложение
-Выбранное решение
-Предлагается использовать Kafka + Event-Driven Architecture + Idempotent Consumer + CQRS Read Model.
+# Выбор архитектуры поставки результатов анализов в мобильное приложение
+
+## 1.Описание решения
+
+### 1.1. Проблема текущего решения
 
 Текущий поток:
 
+```text
 Лабораторное оборудование
-
-  ↓ FTP
-        
-  LIS
-       
- ↓ REST
-        
- CRM
-       
-  ↓
-  
+        ↓ FTP
+       LIS
+        ↓ REST
+       CRM
+        ↓
 Мобильное приложение
+```
 
-Целевой поток:
+имеет несколько критичных недостатков:
 
-Лабораторное оборудование
+- FTP-загрузка из оборудования периодически завершается ошибкой `425`;
+- файлы могут теряться;
+- при повторной передаче возникают дубли;
+- REST-коннектор LIS → CRM не выполняет корректный retry;
+- результаты могут попадать в CRM с задержкой до двух часов;
+- отсутствует надёжный механизм подтверждения обработки;
+- при сбое требуется ручное восстановление;
+- CRM фактически становится промежуточным хранилищем результатов;
+- отсутствует end-to-end контроль доставки результата до пациента.
 
-   ↓ FTP
-   
-  LIS
-  
-  ↓ REST/SOAP
-  
-LIS Integration Adapter
+Это подтверждается Jira `INT-002`, `INT-008`, `INT-011` и Service Desk `SD-005`.
 
-  ↓ LabResultReady
- 
- Kafka
- 
-  ├───────────────┐
-  
-  
-  ↓                         ↓
-  
-  
-Result Processing       CRM Consumer
+---
 
+## 2. Рассмотренные варианты
 
-   ↓                        ↓
-Results Read Model          CRM
+Для доставки результатов анализов можно рассмотреть три основных варианта.
 
+### Вариант 1. Синхронный REST
 
-  ↓
-  
-Mobile BFF
+```text
+LIS → REST → Integration Layer → CRM → Mobile API → Mobile App
+```
 
-  ↓
+LIS после появления результата сразу вызывает REST API следующей системы.
 
+### Вариант 2. Асинхронная доставка через брокер сообщений
+
+```text
+LIS
+ ↓
+Integration Adapter
+ ↓
+Kafka
+ ↓
+Result Processing Service
+ ↓
+CRM / Read Model
+ ↓
+Mobile API
+ ↓
 Mobile App
+```
 
-После успешной записи результата в Read Model публикуется AnalysisReadyForPatient, которое обрабатывается Notification Service и приводит к отправке push.
+### Вариант 3. Периодический polling
 
-Сравнение вариантов
-Критерий	Синхронный REST	Kafka / Event-Driven	Polling
-Гарантия доставки	Средняя, требует retry	Высокая при корректной обработке offset	Средняя
-Защита от дублей	Отдельная реализация	Idempotent Consumer + resultId	Отдельная реализация
-Пиковая нагрузка	Ограничена цепочкой вызовов	Буферизация и backpressure	Постоянная дополнительная нагрузка
-Retry	Вручную	Retry + DLQ	Повторный polling
-Масштабирование	Ограниченное	Горизонтальное	Среднее
-Replay	Нет	Да	Ограниченно
-Latency	Низкая	Низкая	Зависит от интервала
-Сложность эксплуатации	Низкая	Средняя	Низкая/средняя
-Соответствие требованиям	Частичное	Наилучшее	Низкое
-Основные паттерны
-Adapter + Anti-Corruption Layer
-LIS Integration Adapter изолирует мобильный и современный контур от SOAP/FTP/REST Legacy-интерфейсов LIS.
+```text
+Mobile/API
+    ↓
+Result Service
+    ↓
+периодический запрос
+    ↓
+LIS / CRM
+```
 
-Event-Driven Architecture
-Событие LabResultReady публикуется в Kafka. LIS не зависит от того, сколько потребителей существует: CRM, Read Model, Notification Service и другие сервисы могут независимо подписываться на событие.
+---
 
-Idempotent Consumer
-Каждый результат имеет уникальный resultId.
+## 3. Сравнение вариантов
 
-IF resultId already exists
-    → ignore duplicate
-ELSE
-    → save result
-Это устраняет проблему INT-008 с дублированием результатов.
+| Критерий | REST | Kafka / Event-Driven | Polling |
+|---|---|---|---|
+| Гарантия доставки | Низкая/средняя без дополнительной реализации retry/outbox | **Высокая** при правильной настройке producer, consumer и offset | Средняя |
+| Повторная обработка | Требует отдельной реализации | **Хорошо поддерживается** через retry и idempotency | Возможна естественно, но создаёт лишнюю нагрузку |
+| Защита от дублей | Требует отдельной реализации | **Idempotent Consumer + уникальный event/result ID** | Требует отдельной реализации |
+| Пиковая нагрузка | Ограничена синхронной цепочкой | **Хорошо выдерживает за счёт буферизации** | Создаёт постоянную нагрузку |
+| Потеря данных при падении потребителя | Возможна | **Нет при корректной фиксации offset** | Нет при правильной реализации, но возможны пропуски |
+| Задержка | Низкая при нормальной работе | **Низкая** | Зависит от интервала polling |
+| Масштабирование | Ограниченное | **Горизонтальное** | Среднее |
+| Backpressure | Слабый | **Есть за счёт очереди** | Нет |
+| Retry | Реализуется вручную | **Native pattern** через retry topics/DLQ | Повторный polling |
+| DLQ | Нет | **Да** | Нет |
+| Наблюдаемость | Средняя | **Хорошая** | Средняя |
+| Сложность эксплуатации | Низкая | Средняя | Низкая/средняя |
+| Соответствие Target | ❌ | **✅** | ❌ |
+| Подходит для решения | Нет | **Да** | Нет |
 
-Retry + DLQ
-Kafka → Consumer
-          ↓
-       success ──→ processed
+---
 
-       error
-          ↓
-        retry
-          ↓
-      retry exhausted
-          ↓
-         DLQ
-Временные ошибки обрабатываются автоматически с exponential backoff. Неисправимые сообщения попадают в DLQ для расследования и повторной обработки.
+## 4. Выбранное решение
 
-CQRS / Read Model
-Результаты для мобильного приложения хранятся в отдельной Results Read Model.
+### Kafka + Event-Driven Architecture + Outbox + Idempotent Consumer
 
-Это позволяет:
+Для целевой архитектуры предлагаю использовать **асинхронную событийную интеграцию через Kafka**, при этом не подключать мобильное приложение напрямую к Kafka.
 
-быстро читать результаты;
-не создавать нагрузку на CRM;
-горизонтально масштабировать Mobile API;
-не зависеть от доступности CRM при чтении.
-Контракт события
+Целевая цепочка:
+
+```text
+                 ┌──────────────────┐
+                 │ Лабораторное     │
+                 │ оборудование     │
+                 └────────┬─────────┘
+                          │
+                          │ FTP
+                          ▼
+                 ┌──────────────────┐
+                 │       LIS        │
+                 └────────┬─────────┘
+                          │
+                          │ REST/SOAP
+                          ▼
+                 ┌──────────────────┐
+                 │ LIS Integration  │
+                 │ Adapter          │
+                 └────────┬─────────┘
+                          │
+                          │ Event
+                          ▼
+                 ┌──────────────────┐
+                 │      Kafka       │
+                 │   lab-results    │
+                 └────────┬─────────┘
+                          │
+                ┌─────────┴─────────┐
+                │                   │
+                ▼                   ▼
+       ┌────────────────┐   ┌─────────────────┐
+       │ Result         │   │ CRM Integration │
+       │ Processing     │   │ Consumer        │
+       │ Service        │   └────────┬────────┘
+       └───────┬────────┘            │
+               │                     ▼
+               │                   CRM
+               │
+               ▼
+       ┌──────────────────┐
+       │ Results Read     │
+       │ Model            │
+       └────────┬─────────┘
+                │
+                │ REST
+                ▼
+       ┌──────────────────┐
+       │ Mobile Backend   │
+       │ / BFF            │
+       └────────┬─────────┘
+                │
+                │ HTTPS
+                ▼
+       ┌──────────────────┐
+       │ Mobile App       │
+       └──────────────────┘
+```
+
+---
+
+## 5. Почему именно Kafka
+
+Kafka подходит здесь прежде всего не как «быстрая очередь», а как **устойчивый журнал событий**, позволяющий разделить системы по времени и нагрузке.
+
+Например, LIS сформировал результат:
+
+```text
+LabResultReady
+```
+
+Событие попадает в Kafka и сохраняется там до успешной обработки.
+
+Если CRM временно недоступна:
+
+```text
+LIS
+ ↓
+Kafka
+ ↓
+CRM ❌
+```
+
+результат **не теряется**.
+
+После восстановления:
+
+```text
+Kafka
+ ↓ retry
+CRM ✅
+```
+
+Таким образом, сбой CRM не требует повторной передачи результата из LIS вручную.
+
+---
+
+## 6. Событие `LabResultReady`
+
+Предлагаю ввести единый контракт события:
+
+```json
 {
   "eventId": "01J...",
   "eventType": "LabResultReady",
@@ -119,101 +216,342 @@ CQRS / Read Model
   "source": "LIS",
   "correlationId": "COR-123456"
 }
-Поток данных
-Лабораторное оборудование завершает исследование.
-LIS получает результат.
-LIS Integration Adapter принимает результат.
-Формируется событие LabResultReady.
-Событие публикуется в Kafka.
-Kafka сохраняет событие.
-Result Processing Service получает событие.
-Проверяется уникальность resultId.
-Результат записывается в Results Read Model.
-Публикуется AnalysisReadyForPatient.
-Notification Service отправляет push.
-Пациент открывает приложение.
-Mobile BFF получает результат из Read Model.
-Результат отображается пациенту.
-PlantUML — блок-схема
+```
+
+Ключевыми являются:
+
+- `eventId` — уникальный идентификатор события;
+- `resultId` — уникальный идентификатор результата;
+- `orderId` — идентификатор лабораторного заказа;
+- `patientId` — пациент;
+- `correlationId` — трассировка операции;
+- `eventVersion` — версионирование контракта.
+
+---
+
+## 7. Защита от дублей
+
+Проблема `INT-008` показывает, что простого retry недостаточно.
+
+Например:
+
+```text
+LIS
+ ↓
+LabResultReady #123
+ ↓
+Kafka
+ ↓
+Consumer
+ ↓
+CRM
+```
+
+Consumer может обработать событие, но упасть **до фиксации offset**.
+
+Kafka доставит событие повторно:
+
+```text
+LabResultReady #123
+       ↓
+Consumer
+       ↓
+CRM
+       ↓
+LabResultReady #123 повторно
+```
+
+Поэтому consumer должен быть **идемпотентным**.
+
+Например:
+
+```text
+resultId = RES-123456
+
+IF resultId already exists
+    → skip
+ELSE
+    → save result
+```
+
+Это обеспечивает защиту от повторной обработки.
+
+---
+
+## 8. Retry и DLQ
+
+Ошибки обработки не должны приводить к потере результата.
+
+```text
+Kafka
+  ↓
+Consumer
+  ↓
+  ├── Success → processed
+  │
+  └── Error
+       ↓
+     Retry
+       ↓
+     Retry
+       ↓
+     Retry
+       ↓
+      DLQ
+```
+
+### Retry
+
+Временные ошибки:
+
+- CRM недоступна;
+- database timeout;
+- network error.
+
+повторяются автоматически.
+
+### DLQ
+
+Ошибки, которые требуют расследования:
+
+- некорректный формат результата;
+- неизвестный `patientId`;
+- нарушение контракта;
+- невозможность обработки после нескольких retry.
+
+перемещаются в Dead Letter Queue.
+
+При этом необходимо иметь мониторинг DLQ и процедуру reprocessing.
+
+---
+
+## 9. Почему CRM не должна быть единственным источником для мобильного приложения
+
+Я бы не рекомендовал:
+
+```text
+Mobile
+  ↓
+CRM
+  ↓
+результаты анализов
+```
+
+как основной механизм.
+
+CRM является Legacy-компонентом в данном процессе и уже имеет проблемы синхронизации с LIS.
+
+Поэтому предлагаю использовать отдельный:
+
+### Results Read Model
+
+Он содержит данные, оптимизированные для мобильного приложения.
+
+Получается:
+
+```text
+LIS
+ ↓
+Kafka
+ ↓
+Result Processing Service
+ ↓
+Results Read Model
+ ↓
+Mobile BFF
+ ↓
+Mobile App
+```
+
+Это соответствует принципу **CQRS**:
+
+- запись/интеграция — через event stream;
+- чтение — из оптимизированного read model.
+
+Преимущества:
+
+- быстрый доступ к результатам;
+- отсутствие нагрузки на CRM при массовом чтении;
+- горизонтальное масштабирование API;
+- возможность оптимизировать модель данных именно под мобильные сценарии.
+
+При этом CRM продолжает получать результаты для существующих процессов.
+
+---
+
+## 10. Одно событие — несколько потребителей
+
+Одно событие:
+
+```text
+                       Kafka
+                         |
+                  LabResultReady
+                         |
+          +--------------+--------------+
+          |              |              |
+          ▼              ▼              ▼
+        CRM       Results Service    Notification
+```
+
+может использоваться несколькими системами:
+
+- CRM обновляет карточку пациента;
+- Results Service обновляет мобильный Read Model;
+- Notification Service отправляет push.
+
+LIS при этом не должен знать о существовании мобильного приложения.
+
+---
+
+## 11. Уведомление пациента
+
+После успешного появления результата в Read Model публикуется событие:
+
+```text
+AnalysisReadyForPatient
+```
+
+Далее:
+
+```text
+Kafka
+  ↓
+Notification Service
+  ↓
+Push Provider
+  ↓
+Mobile App
+```
+
+Важно, что **уведомление не является подтверждением доставки медицинского результата**.
+
+Сначала данные должны быть доступны через API:
+
+```text
+Results Read Model
+        ↓
+Mobile API
+```
+
+и только после этого отправляется push.
+
+Если push потерян, пользователь всё равно увидит результат при открытии приложения.
+
+---
+
+## 12. Поток данных
+
+```text
+1. Оборудование завершает исследование
+                ↓
+2. LIS получает результат
+                ↓
+3. LIS Integration Adapter принимает результат
+                ↓
+4. Формируется LabResultReady
+                ↓
+5. Event публикуется в Kafka
+                ↓
+6. Kafka сохраняет событие
+                ↓
+7. Result Processing Service получает событие
+                ↓
+8. Проверяется idempotency/resultId
+                ↓
+9. Результат записывается в Results Read Model
+                ↓
+10. Публикуется AnalysisReadyForPatient
+                ↓
+11. Notification Service отправляет Push
+                ↓
+12. Пациент открывает приложение
+                ↓
+13. Mobile BFF получает данные
+                ↓
+14. Результат отображается пациенту
+```
+
+---
+
+## 13. Блок-схема в PlantUML
+
+```plantuml
 @startuml
 title Здоровье+ — доставка результатов анализов в мобильное приложение
 
 skinparam componentStyle rectangle
 skinparam shadowing false
 
-rectangle "Лабораторное оборудование" as Equipment
-rectangle "LIS" as LIS
-rectangle "LIS Integration Adapter
-Anti-Corruption Layer" as Adapter
-queue "Kafka
-lab-results" as Kafka
+rectangle "Лабораторное\nоборудование" as Equipment
+rectangle "LIS\nLaboratory Information System" as LIS
+rectangle "LIS Integration Adapter\nAnti-Corruption Layer" as Adapter
+queue "Kafka\nlab-results" as Kafka
 
-rectangle "Result Processing
-Service" as ResultService
-database "Results Read Model
-(CQRS)" as ReadModel
+rectangle "Result Processing\nService" as ResultService
+database "Results Read Model\n(CQRS)" as ReadModel
 
-rectangle "CRM Integration
-Consumer" as CRMConsumer
+rectangle "CRM Integration\nConsumer" as CRMConsumer
 rectangle "CRM" as CRM
 
-rectangle "Notification
-Service" as Notification
-queue "Retry / DLQ" as DLQ
-rectangle "Push / SMS / E-mail
-Providers" as Providers
+rectangle "Notification\nService" as Notification
+queue "Notification Retry / DLQ" as DLQ
+rectangle "Push / SMS / E-mail\nProviders" as Providers
 
 rectangle "Mobile Backend / BFF" as BFF
 rectangle "API Gateway" as Gateway
 rectangle "Mobile App" as Mobile
 
-Equipment --> LIS : Результат исследования
-FTP
-LIS --> Adapter : Результат
-REST / SOAP
-Adapter --> Kafka : LabResultReady
-Event
+Equipment --> LIS : Результат исследования\nFTP
+LIS --> Adapter : Результат\nREST / SOAP
 
-Kafka --> ResultService : Consume
-Consumer Group
-Kafka --> CRMConsumer : Consume
-Consumer Group
+Adapter --> Kafka : LabResultReady\nEvent
 
-ResultService --> ReadModel : Upsert
-Idempotent Consumer
-CRMConsumer --> CRM : Update result
-REST
+Kafka --> ResultService : Consume\nConsumer Group
+Kafka --> CRMConsumer : Consume\nConsumer Group
 
-ReadModel --> BFF : Read results
-REST
+ResultService --> ReadModel : Upsert result\nIdempotent Consumer
+
+CRMConsumer --> CRM : Update result\nREST
+
+ReadModel --> BFF : Read results\nREST
 BFF --> Gateway : API
 Gateway --> Mobile : HTTPS
 
-ResultService --> Kafka : AnalysisReadyForPatient
+ResultService --> Kafka : AnalysisReadyForPatient\nEvent
+
 Kafka --> Notification : Consume event
 
 Notification --> Providers : Push / SMS / E-mail
-Notification --> DLQ : Retry exhausted
+
+Notification --> DLQ : Failed delivery\nRetry exhausted
 
 note right of Adapter
-Adapter / ACL
-- изоляция Legacy
-- нормализация формата
-- correlationId
+Паттерны:
+- Adapter
+- Anti-Corruption Layer
+- Retry
+- Idempotency
+- Correlation ID
 end note
 
 note right of Kafka
 Event-Driven Architecture
+
+Преимущества:
 - decoupling
 - buffering
 - backpressure
 - replay
 - horizontal scaling
+- durable events
 end note
 
 note right of ResultService
 Idempotent Consumer
-resultId = уникальный ключ
+
+resultId используется
+как уникальный ключ.
 
 Повторное событие
 не создаёт дубль.
@@ -222,31 +560,50 @@ end note
 note right of ReadModel
 CQRS / Read Model
 
-Быстрое чтение
-без нагрузки на CRM.
+Оптимизировано
+для быстрого чтения
+мобильным приложением.
+
+Не нагружает CRM.
 end note
 
 note bottom of Notification
-Push — только канал информирования.
-Результат всегда доступен
-через Mobile API.
+Push — дополнительный канал информирования.
+
+Доступность результата в API
+не зависит от успешности Push.
 end note
 
 @enduml
-Гарантии решения
-Требование	Решение
-Не терять результаты при недоступности CRM	Kafka + durable events
-Не создавать дубли	Idempotent Consumer + resultId
-Переживать пики	Kafka buffering + Consumer Groups
-Автоматически восстанавливаться	Retry + exponential backoff
-Обрабатывать неисправимые ошибки	DLQ
-Быстро отдавать результаты	Results Read Model
-Не зависеть от CRM при чтении	CQRS
-Уведомлять пациента	Event → Notification Service → Push
-Не зависеть от Push	Результат доступен через API
-Расследовать проблемы	eventId + correlationId + tracing
-Не переписывать Legacy	Adapter / ACL
-Архитектурный вывод
-Выбранная архитектура — асинхронная Event-Driven архитектура на Kafka с Adapter/Anti-Corruption Layer, Idempotent Consumer, Retry/DLQ и отдельным CQRS Read Model.
+```
 
-Она устраняет основные проблемы текущего LIS → CRM потока: потерю данных, дублирование, отсутствие автоматического восстановления и большие задержки, при этом позволяет независимо масштабировать обработку результатов и мобильный API.
+---
+
+## 14. Гарантии решения
+
+| Требование | Решение |
+|---|---|
+| Не терять результаты при недоступности CRM | Kafka + durable events |
+| Не создавать дубли | Idempotent Consumer + `resultId` |
+| Переживать пики нагрузки | Kafka buffering + горизонтальное масштабирование consumers |
+| Автоматически восстанавливаться после временных ошибок | Retry |
+| Обрабатывать неисправимые ошибки | DLQ |
+| Быстро отдавать результаты мобильному приложению | Отдельный Results Read Model |
+| Не зависеть от CRM при чтении | CQRS / Read Model |
+| Уведомлять пациента | Event → Notification Service → Push |
+| Не зависеть от доставки Push | Результат хранится в Read Model и доступен через API |
+| Расследовать проблемы | `eventId` + `correlationId` + distributed tracing |
+| Не ломать существующую CRM | Отдельный CRM Consumer / Adapter |
+| Масштабировать обработку | Kafka Consumer Groups |
+| Изолировать LIS от мобильного приложения | Event-Driven Architecture + Integration Layer |
+
+---
+
+## 15. Архитектурный вывод
+
+**Оптимальным решением является асинхронная Event-Driven архитектура на Kafka с Adapter/Anti-Corruption Layer на входе из LIS, Idempotent Consumer, Retry/DLQ и отдельным CQRS Read Model для мобильного приложения.**
+
+Это решение устраняет основные проблемы текущего LIS → CRM потока: **потерю файлов, дублирование, отсутствие retry и длительные задержки**, одновременно позволяя независимо масштабировать обработку результатов и мобильный API.
+
+При этом **LIS и CRM не требуется переписывать в рамках MVP** — новая интеграционная архитектура изолирует Legacy и позволяет постепенно модернизировать существующий контур.
+
