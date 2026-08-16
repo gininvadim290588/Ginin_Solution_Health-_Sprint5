@@ -1,1 +1,167 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
 
+LAYOUT_LEFT_RIGHT()
+title Целевая контекстная диаграмма «Здоровье+»\nс интеграционными паттернами
+
+' =========================================================
+' Акторы
+' =========================================================
+
+Person(patient, "Пациент","Записывается к врачу, оплачивает услуги,\получает результаты анализов и уведомления")
+
+Person(doctor, "Врач",
+"Управляет расписанием,\просматривает данные пациентов")
+
+Person(lab, "Лаборант","Просматривает результаты анализов в LIS")
+
+' =========================================================
+' Новый мобильный контур
+' =========================================================
+
+System(mobile, "Мобильное приложение","iOS / Android\nЗапись, оплата, уведомления,\nрезультаты анализов, полисы")
+
+System(gateway, "API Gateway","Единая точка входа\nOAuth2/OIDC, Rate Limiting,\nIdempotency, Routing")
+
+System(bff, "Mobile Backend / BFF","Backend for Frontend\nАгрегация данных и orchestration")
+
+System(iam, "Identity & Access Management","OAuth 2.0 / OpenID Connect\Аутентификация и авторизация")
+
+System(integration, "Integration Layer","Anti-Corruption Layer + Adapters\nOrchestration, Retry, Timeout,\nCircuit Breaker, Bulkhead")
+
+System(events, "Event Bus","Kafka\nEvent-Driven Architecture\nБуферизация и decoupling")
+
+System(policy, "Policy Service / DMS Read Model","CQRS / Read Model\nКэширование состояния полисов")
+
+System(notification, "Notification Service","Event-driven notifications\nRetry / DLQ\nPush / SMS / E-mail")
+
+System(observability, "Observability Platform","OpenTelemetry\nMetrics / Logs / Distributed Tracing")
+
+' =========================================================
+' Существующие системы
+' =========================================================
+
+System(schedule, "Расписание","Java, REST, PostgreSQL\nСлоты, запись, отмена, перенос")
+
+System(crm, "CRM","Java, REST, PostgreSQL\nПациенты, история обращений,\nрезультаты анализов")
+
+System(lis, "LIS","SOAP, FTP, REST\nЛабораторные результаты")
+
+System(policy1c, "1С: Полисы","1С:Предприятие, HTTP-шлюз\nПроверка полисов ДМС")
+
+System(payment, "Платёжный шлюз","Внешний поставщик\nREST API + Webhook")
+
+System(rabbit, "RabbitMQ","Существующий брокер\nУведомления")
+
+System(providers, "Внешние провайдеры","SMS / E-mail / Push")
+
+' =========================================================
+' Пациент
+' =========================================================
+
+Rel(patient, mobile,"Использует","HTTPS")
+
+Rel(mobile, gateway,"API-запросы","HTTPS / JSON\n[Synchronous REST]")
+
+Rel(gateway, iam,"Проверка токена","OAuth2 / OIDC\n[Authentication]")
+
+Rel(gateway, bff,"Маршрутизация","HTTPS / REST\n[API Gateway]")
+
+' =========================================================
+' Mobile Backend
+' =========================================================
+
+Rel(bff, integration,"Бизнес-запросы\nи orchestration","REST / gRPC\n[BFF + Orchestration]")
+
+Rel(bff, events,"Публикация событий","Kafka\n[Event-Driven]")
+
+Rel(bff, observability,"Trace / Metrics / Logs","OpenTelemetry\n[Observability]")
+
+' =========================================================
+' Integration Layer → существующие системы
+' =========================================================
+
+Rel(integration, schedule,"Слоты / запись / отмена\nIdempotency-Key","REST / HTTPS\[Adapter + ACL]\[Idempotency]\[Circuit Breaker]")
+
+Rel(integration, crm,"Карточка пациента,\nистория обращений","REST / HTTPS\[Adapter + ACL]\[Timeout / Circuit Breaker]")
+
+Rel(integration, policy,"Состояние полиса","REST / HTTPS\[Read Model]")
+
+Rel(integration, payment,"Инициирование платежа\nIdempotency-Key","REST / HTTPS\[Adapter + Idempotency]\[State Machine]")
+
+Rel(payment, integration,"Результат платежа","HTTPS Webhook\[Async Callback]")
+
+Rel(integration, lis,"Получение результатов","REST / SOAP\[Adapter / ACL]")
+
+Rel(lis, integration,"Результаты анализов","FTP / REST / Async\[Event-Driven]\[Retry + Deduplication]")
+
+' =========================================================
+' Policy Read Model
+' =========================================================
+
+Rel(policy, policy1c,"Синхронизация полисов","REST/HTTP\[Async Sync]\[CQRS / Read Model]\[Controlled Fallback]")
+
+' =========================================================
+' Event Bus
+' =========================================================
+
+Rel(integration, events,"Доменные события","Kafka\[Event-Driven]\[Producer]")
+
+Rel(events, notification,"BookingCreated\PaymentConfirmed\AnalysisReady\PolicyUpdated",
+"Kafka\[Event-Driven]\[Consumer]")
+
+' =========================================================
+' Notification
+' =========================================================
+
+Rel(notification, rabbit,"Совместимость с существующим контуром",
+"AMQP\n[Adapter]\n[Retry / DLQ]")
+
+Rel(rabbit, providers,"Доставка сообщений","AMQP / Provider API")
+
+Rel(notification, providers,"Push / SMS / E-mail","HTTPS\n[Adapter]")
+
+' =========================================================
+' Существующие пользователи
+' =========================================================
+
+Rel(doctor, schedule,"Управляет расписанием","HTTPS / REST")
+
+Rel(doctor, crm,"Просматривает данные пациентов","HTTPS / REST")
+
+Rel(lab, lis,"Просматривает результаты","UI / API")
+
+' =========================================================
+' Observability
+' =========================================================
+
+Rel(gateway, observability,"Access logs / Metrics / Traces","OpenTelemetry")
+
+Rel(integration, observability,"Logs / Metrics / Distributed Tracing","OpenTelemetry")
+
+Rel(events, observability,"Metrics / Traces","OpenTelemetry")
+
+' =========================================================
+' Легенда паттернов
+' =========================================================
+
+SHOW_LEGEND()
+
+legend right
+|= Обозначение |= Паттерн / стиль |
+| <back:#E8F1FF>API Gateway</back> | Единая точка входа, security, rate limiting |
+| <back:#E8F1FF>BFF</back> | Backend for Frontend для мобильных сценариев |
+| <back:#E8F1FF>ACL</back> | Anti-Corruption Layer — изоляция от Legacy-моделей |
+| <back:#E8F1FF>Adapter</back> | Адаптация REST / SOAP / HTTP / FTP / AMQP |
+| <back:#E8F1FF>Idempotency</back> | Защита записи и платежей от повторной обработки |
+| <back:#E8F1FF>Circuit Breaker</back> | Защита от каскадных отказов |
+| <back:#E8F1FF>Retry + DLQ</back> | Повторная доставка и обработка неуспешных сообщений |
+| <back:#E8F1FF>Event-Driven</back> | Асинхронные события через Kafka |
+| <back:#E8F1FF>CQRS / Read Model</back> | Быстрое чтение без нагрузки на Legacy |
+| <back:#E8F1FF>State Machine</back> | Управление состоянием платежа |
+| <back:#E8F1FF>Bulkhead</back> | Изоляция критичных потоков |
+| <back:#E8F1FF>Rate Limiting</back> | Защита downstream-систем от перегрузки |
+| <back:#E8F1FF>Observability</back> | Logs + Metrics + Distributed Tracing |
+endlegend
+
+@enduml
