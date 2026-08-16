@@ -76,20 +76,20 @@
              |
    +---------+---------+
    |                   |
-SUCCESS              TIMEOUT
-   |                      |
-    v                     v
-PAID UNKNOWN RESULT
+SUCCESS             TIMEOUT
+   |                    |
+   v                    v
+PAID              UNKNOWN RESULT
 |
 v
 GET payment status
-|
+             |
 +------------+------------+
-| | |
-PAID FAILED UNKNOWN
-| | |
-v v v
-PAID FAIL retry status
+|            |            |
+PAID      FAILED       UNKNOWN
+|            |            |
+v            v            v
+PAID FAIL  retry        status
 |
 v
 PAYMENT_PENDING
