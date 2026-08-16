@@ -3,17 +3,18 @@
 Предлагается использовать Kafka + Event-Driven Architecture + Idempotent Consumer + CQRS Read Model.
 
 Текущий поток:
+
 Лабораторное оборудование
 
-        ↓ FTP
+  ↓ FTP
         
-       LIS
+  LIS
        
-        ↓ REST
+ ↓ REST
         
-       CRM
+ CRM
        
-        ↓
+  ↓
 Мобильное приложение
 
 Целевой поток:
