@@ -348,7 +348,8 @@ components:
               example: req-01J7XYZ123
 ```
 
-3. Пагинация
+### 3. Пагинация
+
 Для MVP используется offset-based pagination:
 
 GET /api/v1/appointments?status=upcoming&limit=20&offset=0
@@ -369,7 +370,8 @@ hasNext — наличие следующей страницы.
 appointmentDateTime ASC, id ASC
 Если в будущем объём данных существенно вырастет, можно перейти на cursor-based pagination.
 
-4. Версионирование API
+### 4. Версионирование API
+
 Используется версия в URL:
 
 /api/v1/appointments
@@ -380,7 +382,8 @@ appointmentDateTime ASC, id ASC
 
 Обратно совместимые изменения, например добавление необязательного поля, не требуют новой major-версии. Изменения, нарушающие контракт, должны выпускаться в новой версии.
 
-5. Аутентификация и безопасность
+### 5. Аутентификация и безопасность
+
 API требует:
 
 Authorization: Bearer <JWT>
@@ -401,7 +404,9 @@ rate limiting;
 request size limits;
 request/correlation ID;
 аудит обращений к персональным данным.
-6. HTTP-коды
+
+### 6. Https коды
+
 200 OK
 {
   "data": [],
@@ -412,6 +417,7 @@ request/correlation ID;
     "hasNext": false
   }
 }
+
 401 Unauthorized
 {
   "error": {
@@ -420,6 +426,7 @@ request/correlation ID;
     "requestId": "req-01J7XYZ123"
   }
 }
+
 500 Internal Server Error
 {
   "error": {
@@ -428,9 +435,10 @@ request/correlation ID;
     "requestId": "req-01J7XYZ123"
   }
 }
+
 requestId позволяет связать ошибку мобильного клиента с логами и distributed tracing, что напрямую помогает решить проблему INT-007.
 
-7. Итоговое архитектурное решение
+### 7. Итоговое архитектурное решение
                     Mobile App
                         |
                      HTTPS
@@ -460,6 +468,7 @@ requestId позволяет связать ошибку мобильного к
                  +--------------+
                  | Расписание   |
                  +--------------+
+                 
 API /api/v1/appointments предоставляет стабильный контракт мобильному приложению и скрывает внутреннюю реализацию ИТ-ландшафта.
 
 Мобильное приложение не должно знать, где физически находятся данные и какие Legacy-системы используются для их получения. BFF отвечает за агрегацию и адаптацию данных, а API Gateway — за cross-cutting concerns: аутентификацию, rate limiting, трассировку и защиту внешнего API.
