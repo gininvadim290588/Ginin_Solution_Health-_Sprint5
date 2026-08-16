@@ -473,19 +473,21 @@ API /api/v1/appointments предоставляет стабильный кон�
 
 Мобильное приложение не должно знать, где физически находятся данные и какие Legacy-системы используются для их получения. BFF отвечает за агрегацию и адаптацию данных, а API Gateway — за cross-cutting concerns: аутентификацию, rate limiting, трассировку и защиту внешнего API.
 
-Ключевые решения
-Область	Решение
-Endpoint	GET /api/v1/appointments
-Фильтрация	status=upcoming
-Пагинация	limit + offset
-Максимальный размер страницы	100
-Сортировка	appointmentDateTime ASC, id ASC
-Аутентификация	Bearer JWT
-Идентификация пациента	Из JWT, не из запроса
-Версионирование	URL /api/v1
-Backend	Mobile BFF
-Внешний вход	API Gateway
-Rate limiting	API Gateway
-Tracing	requestId / correlation ID
-Ошибки	Единый ErrorResponse
-Legacy isolation	Integration Layer
+## Ключевые решения
+
+| Область | Решение |
+|---|---|
+| Endpoint | `GET /api/v1/appointments` |
+| Фильтрация | `status=upcoming` |
+| Пагинация | `limit` + `offset` |
+| Максимальный размер страницы | `100` |
+| Сортировка | `appointmentDateTime ASC, id ASC` |
+| Аутентификация | Bearer JWT |
+| Идентификация пациента | Из JWT, не из запроса |
+| Версионирование | URL `/api/v1` |
+| Backend | Mobile BFF |
+| Внешний вход | API Gateway |
+| Rate limiting | API Gateway |
+| Tracing | `requestId` / correlation ID |
+| Ошибки | Единый `ErrorResponse` |
+| Legacy isolation | Integration Layer |
