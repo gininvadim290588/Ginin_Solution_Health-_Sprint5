@@ -36,12 +36,16 @@ LIS Integration Adapter
  
   ├───────────────┐
   
+  
   ↓                         ↓
+  
   
 Result Processing       CRM Consumer
 
+
    ↓                        ↓
 Results Read Model          CRM
+
 
   ↓
   
