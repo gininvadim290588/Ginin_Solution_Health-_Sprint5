@@ -1,0 +1,472 @@
+# Задание 3.2. Автоматизация бизнес-операции «Запись к врачу с оплатой и резервированием сдачи анализов»
+
+## 1. Целевой успешный сценарий
+
+Для бизнес-операции предлагается использовать **оркеструемую Saga**. Оркестратор управляет последовательностью локальных транзакций и знает состояние всего бизнес-процесса.
+
+Успешный сценарий:
+
+1. Пациент в мобильном приложении выбирает врача, слот и необходимые лабораторные исследования.
+2. Mobile App отправляет запрос в API Gateway с уникальным `Idempotency-Key`.
+3. API Gateway передаёт запрос в Booking Saga Orchestrator.
+4. Оркестратор проверяет идемпотентность запроса.
+5. Проверяется валидность полиса ДМС через отдельный Policy Service / адаптер к 1С.
+6. В системе расписания резервируется слот врача.
+7. В LIS резервируется слот для сдачи биоматериала.
+8. Через платёжный адаптер создаётся платёж и выполняется авторизация/списание.
+9. После успешной оплаты оркестратор подтверждает запись и лабораторный слот.
+10. Оркестратор фиксирует успешное завершение Saga.
+11. Notification Service отправляет пациенту подтверждение записи.
+
+Ключевой принцип: **между системами не используется распределённая ACID-транзакция**. Каждая система выполняет локальную транзакцию, а Saga обеспечивает согласованность процесса с помощью компенсирующих действий.
+
+---
+
+## 2. UML Sequence Diagram — успешный сценарий
+
+```plantuml
+@startuml
+title Здоровье+ — Запись к врачу с оплатой и резервированием лаборатории
+
+actor "Пациент" as Patient
+participant "Mobile App" as App
+participant "API Gateway" as Gateway
+participant "Booking Saga\nOrchestrator" as Saga
+participant "Policy Service /\n1С: Полисы Adapter" as Policy
+participant "Расписание" as Schedule
+participant "LIS Adapter" as LISAdapter
+participant "LIS" as LIS
+participant "Payment Adapter" as PayAdapter
+participant "Платёжный шлюз" as Payment
+participant "Notification Service" as Notify
+
+Patient -> App : Выбор врача, слота\nи анализа
+App -> Gateway : POST /booking\nIdempotency-Key
+Gateway -> Saga : Start Booking Saga
+
+note right of Gateway
+Idempotency-Key:
+уникальный ключ операции
+end note
+
+Saga -> Policy : Проверить полис
+Policy -> Policy : Проверка валидности
+Policy --> Saga : Policy valid
+
+Saga -> Schedule : Reserve doctor slot\nbookingId
+Schedule -> Schedule : Проверка доступности\n+ идемпотентная запись
+Schedule --> Saga : Slot reserved
+
+Saga -> LISAdapter : Reserve lab slot\nreservationId
+LISAdapter -> LIS : Reserve lab slot
+LIS --> LISAdapter : Lab slot reserved
+LISAdapter --> Saga : Lab slot reserved
+
+Saga -> PayAdapter : Create / authorize payment\npaymentId
+PayAdapter -> Payment : Payment request\nidempotency key
+Payment --> PayAdapter : Payment authorized
+PayAdapter --> Saga : Payment successful
+
+Saga -> Schedule : Confirm booking\nbookingId
+Schedule --> Saga : Booking confirmed
+
+Saga -> LISAdapter : Confirm lab reservation\nreservationId
+LISAdapter -> LIS : Confirm reservation
+LIS --> LISAdapter : Reservation confirmed
+LISAdapter --> Saga : Lab reservation confirmed
+
+Saga -> Notify : Publish BookingConfirmed
+Notify --> App : Push confirmation
+App --> Patient : Запись подтверждена\nОплата успешна\nЛаборатория зарезервирована
+
+Saga -> Saga : Saga COMPLETED
+
+@enduml
+```
+
+---
+
+# 3. Почему выбран именно Orchestration-based Saga
+
+Для данного сценария предлагается **оркеструемый тип Saga**, поскольку бизнес-операция состоит из нескольких зависимых шагов: проверка полиса, резервирование слота врача, резервирование лаборатории и оплата. Оркестратор позволяет централизованно управлять состоянием Saga, порядком выполнения шагов, retry и компенсациями, что существенно упрощает эксплуатацию и диагностику по сравнению с распределённой choreography-схемой. Это особенно важно с учётом существующих проблем `INT-001`, `INT-003`, `INT-005` и `INT-009`, а также ошибок оплаты и дублирования записей из Service Desk. При этом Saga не требует распределённой транзакции между PostgreSQL, 1С, LIS и внешним платёжным шлюзом и поэтому лучше подходит для постепенной интеграции Legacy-систем.
+
+---
+
+# 4. Почему не Choreography
+
+Choreography можно реализовать через цепочку событий:
+
+```text
+BookingCreated
+      ↓
+SlotReserved
+      ↓
+LabReserved
+      ↓
+PaymentCompleted
+      ↓
+BookingConfirmed
+```
+
+Однако для этого сценария она создаёт дополнительные сложности:
+
+- состояние бизнес-процесса распределяется между сервисами;
+- сложнее понять, на каком шаге находится операция;
+- сложнее реализовать компенсации;
+- сложнее расследовать зависшие операции;
+- появляется риск возникновения сложной цепочки взаимных событий.
+
+Поскольку процесс имеет чёткую последовательность и несколько обязательных шагов, **центральный Saga Orchestrator является более прозрачным решением**.
+
+---
+
+# 5. Компенсирующие транзакции
+
+| Шаг сценария | Компенсирующее действие | Риск, который устраняется |
+|---|---|---|
+| Проверка полиса ДМС | Отдельной компенсации не требуется: операция read-only. При невалидном полисе Saga завершается с ошибкой до резервирования ресурсов | Исключает начало платной операции для пациента с невалидным полисом |
+| Резервирование слота врача | `CancelDoctorSlotReservation(bookingId)` — освобождение зарезервированного слота | Слот не остаётся заблокированным, если последующие шаги завершились ошибкой |
+| Резервирование лабораторного слота | `CancelLabReservation(reservationId)` — снятие резерва в LIS | Исключает потерю лабораторной ёмкости при неуспешной оплате |
+| Оплата | `RefundPayment(paymentId)` / `CancelAuthorization(paymentId)` в зависимости от стадии платежа | Исключает ситуацию, когда деньги списаны, но запись не состоялась |
+| Подтверждение записи | `CancelBooking(bookingId)` при необходимости отката уже подтверждённой записи | Исключает подтверждённую запись без успешной оплаты |
+| Отправка уведомления | Повторная доставка через Notification Queue; компенсация бизнес-транзакции не требуется | Исключает потерю подтверждения пациенту из-за временной недоступности push-провайдера |
+
+### Важное ограничение компенсации оплаты
+
+Для платежа нельзя рассчитывать на простой технический rollback.
+
+Например:
+
+```text
+Payment Gateway
+      ↓
+деньги списаны
+      ↓
+Booking Service ❌
+```
+
+После фактического списания средств транзакцию уже нельзя откатить через database rollback.
+
+Поэтому компенсацией является отдельная бизнес-операция:
+
+```text
+RefundPayment(paymentId)
+```
+
+или отмена авторизации, если платёж ещё находится на стадии authorization.
+
+Это непосредственно устраняет проблему `INT-001` и снижает риск повторного списания, отражённый в `SD-009`.
+
+---
+
+# 6. Поведение Saga при сбое
+
+Например, если оплата не прошла:
+
+```text
+1. Policy validated             ✓
+2. Doctor slot reserved         ✓
+3. Lab slot reserved            ✓
+4. Payment                      ✗
+             ↓
+5. Cancel lab reservation       ✓
+6. Cancel doctor reservation    ✓
+7. Saga FAILED
+```
+
+Если деньги были списаны, но подтверждение платежа потерялось:
+
+```text
+Payment Gateway
+      ↓
+Payment successful
+      ↓
+network timeout
+      ↓
+Saga does not know result
+```
+
+**Нельзя автоматически считать платеж неуспешным и повторять списание.**
+
+Оркестратор должен сначала запросить статус платежа по `paymentId` / merchant transaction ID:
+
+```text
+Saga
+ ↓
+GetPaymentStatus(paymentId)
+ ↓
+ ├── SUCCESS → continue Saga
+ ├── FAILED  → compensate
+ └── UNKNOWN → retry / reconciliation
+```
+
+Это критично для устранения `INT-001`.
+
+---
+
+# 7. Механизм идемпотентности на входе
+
+На входе в API Gateway необходимо использовать заголовок:
+
+```http
+Idempotency-Key: 7b3f9c2e-...
+```
+
+Ключ генерируется мобильным приложением **один раз на одну бизнес-операцию записи**.
+
+Например:
+
+```text
+Patient
+   ↓
+POST /bookings
+Idempotency-Key = ABC-123
+   ↓
+API Gateway
+   ↓
+Saga Orchestrator
+```
+
+Если пользователь дважды нажал кнопку «Записаться»:
+
+```text
+POST /bookings
+Idempotency-Key: ABC-123
+
+POST /bookings
+Idempotency-Key: ABC-123
+```
+
+второй запрос не должен запускать новую Saga.
+
+---
+
+# 8. Idempotency Store
+
+В API Gateway / Booking Orchestrator необходимо иметь хранилище идемпотентности.
+
+Например:
+
+```text
+idempotency_key
+-----------------------------
+ABC-123
+status = COMPLETED
+saga_id = SAGA-001
+response = {...}
+created_at = ...
+expires_at = ...
+```
+
+Алгоритм:
+
+```text
+Получить Idempotency-Key
+          ↓
+    Проверить Store
+          ↓
+   ┌──────┴──────┐
+   │             │
+ отсутствует    существует
+   │             │
+   ↓             ↓
+создать Saga    вернуть
+   │             │
+   ↓             └── сохранённый response
+выполнить
+операцию
+```
+
+Для конкурентных запросов проверка и создание записи должны выполняться атомарно.
+
+Например, через:
+
+```text
+UNIQUE(idempotency_key)
+```
+
+в PostgreSQL либо через атомарную операцию Redis.
+
+---
+
+# 9. Идемпотентность должна быть на каждом критичном шаге
+
+Одного Idempotency-Key на API недостаточно.
+
+Необходимо передавать уникальные идентификаторы операции дальше:
+
+```text
+Idempotency-Key
+       ↓
+Saga ID
+       ↓
+Booking ID
+       ↓
+Lab Reservation ID
+       ↓
+Payment ID
+```
+
+### Расписание
+
+Повтор:
+
+```text
+ReserveSlot(bookingId)
+```
+
+не должен создать вторую запись.
+
+Необходим уникальный ключ:
+
+```text
+bookingId
+```
+
+и желательно ограничение на уникальность:
+
+```text
+doctorId + slotId
+```
+
+для активной записи.
+
+### LIS
+
+Повтор:
+
+```text
+ReserveLabSlot(reservationId)
+```
+
+должен вернуть существующий reservation, а не создать новый.
+
+### Платёжный шлюз
+
+Каждый платёж должен иметь уникальный:
+
+```text
+paymentId / merchantTransactionId
+```
+
+и этот идентификатор должен передаваться во внешний платёжный шлюз как его idempotency key, если провайдер поддерживает такой механизм.
+
+---
+
+# 10. Состояния Saga
+
+Рекомендуется хранить состояние Saga:
+
+```text
+STARTED
+   ↓
+POLICY_VALIDATED
+   ↓
+DOCTOR_SLOT_RESERVED
+   ↓
+LAB_SLOT_RESERVED
+   ↓
+PAYMENT_PENDING
+   ↓
+PAYMENT_COMPLETED
+   ↓
+BOOKING_CONFIRMED
+   ↓
+LAB_CONFIRMED
+   ↓
+COMPLETED
+```
+
+При ошибке:
+
+```text
+FAILED
+   ↓
+COMPENSATING
+   ↓
+COMPENSATED
+```
+
+Это позволяет:
+
+- видеть зависшие операции;
+- выполнять retry;
+- запускать компенсации;
+- восстанавливать процесс после падения Orchestrator;
+- проводить reconciliation.
+
+---
+
+# 11. Архитектурные гарантии
+
+| Проблема | Архитектурное решение |
+|---|---|
+| Двойной клик пациента | `Idempotency-Key` |
+| Дублирование записи | Идемпотентный `bookingId` + уникальность слота |
+| Двойное списание | `paymentId` + idempotency key платежа |
+| Деньги списаны, но запись не подтверждена | Проверка статуса платежа + `RefundPayment` |
+| Сбой LIS после резервирования | `CancelLabReservation` |
+| Сбой оплаты после резервирования слотов | Компенсация LIS + расписания |
+| Падение Orchestrator | Персистентное состояние Saga |
+| Временная ошибка системы | Retry с backoff |
+| Зависшая Saga | Timeout + reconciliation |
+| Потеря уведомления | Notification Queue + retry/DLQ |
+| Ошибка 1С на пике | Retry / circuit breaker / timeout на Policy Adapter |
+
+---
+
+# 12. Итоговая архитектура сценария
+
+```text
+                    ┌─────────────────┐
+                    │   Mobile App    │
+                    └────────┬────────┘
+                             │
+                    Idempotency-Key
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │  API Gateway    │
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │ Booking Saga    │
+                    │ Orchestrator    │
+                    └────┬───┬───┬────┘
+                         │   │   │
+              ┌──────────┘   │   └───────────┐
+              ▼              ▼               ▼
+        ┌──────────┐   ┌──────────┐   ┌─────────────┐
+        │ Policy   │   │Schedule  │   │ LIS Adapter │
+        │ Service  │   │          │   │             │
+        └────┬─────┘   └──────────┘   └──────┬──────┘
+             │                              │
+             ▼                              ▼
+            1С                             LIS
+
+                    ┌─────────────────┐
+                    │ Payment Adapter │
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │ Payment Gateway │
+                    └─────────────────┘
+
+              Saga Orchestrator
+                     │
+                     ▼
+             Notification Service
+                     │
+                     ▼
+                  Patient
+```
+
+## Архитектурный вывод
+
+Для операции «Запись к врачу с оплатой и резервированием сдачи анализов» оптимальным является **Orchestration-based Saga** с персистентным состоянием, retry, timeout, reconciliation и компенсирующими транзакциями.
+
+Ключевое требование — **идемпотентность на всех критичных границах**, а не только на API: входной `Idempotency-Key`, `bookingId`, `reservationId` и `paymentId` должны использоваться для защиты от повторного выполнения.
+
+Особое внимание необходимо уделить платежам: при неизвестном результате нельзя повторять списание, сначала требуется получить фактический статус платежа. После фактического списания компенсация выполняется через refund/cancel authorization, а не через технический rollback.
