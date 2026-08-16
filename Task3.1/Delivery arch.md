@@ -15,26 +15,42 @@
  CRM
        
   ↓
+  
 Мобильное приложение
 
 Целевой поток:
 
 Лабораторное оборудование
-        ↓ FTP
-       LIS
-        ↓ REST/SOAP
+
+   ↓ FTP
+   
+  LIS
+  
+  ↓ REST/SOAP
+  
 LIS Integration Adapter
-        ↓ LabResultReady
-      Kafka
-        ├───────────────┐
-        ↓               ↓
+
+  ↓ LabResultReady
+ 
+ Kafka
+ 
+  ├───────────────┐
+  
+  ↓                         ↓
+  
 Result Processing   CRM Consumer
-        ↓               ↓
-Results Read Model   CRM
-        ↓
-   Mobile BFF
-        ↓
-   Mobile App
+
+   ↓                        ↓
+Results Read Model          CRM
+
+  ↓
+  
+Mobile BFF
+
+  ↓
+
+Mobile App
+
 После успешной записи результата в Read Model публикуется AnalysisReadyForPatient, которое обрабатывается Notification Service и приводит к отправке push.
 
 Сравнение вариантов
