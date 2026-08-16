@@ -31,7 +31,7 @@
 
 ### 2.1. 1С
 
-'''text
+```text
 Запрос проверки полиса
 |
 v
@@ -59,9 +59,11 @@ timeout / 503
 v
 Fallback
 
-text
+```
 
 **Fallback:**
+
+```text
 Fallback
 |
 +---------+---------+
@@ -74,8 +76,7 @@ cached result? или устарел
 v v
 вернуть cached POLICY_CHECK_
 status UNAVAILABLE
-
-text
+```
 
 > **Важно:** использование кэша как fallback должно соответствовать бизнес-правилам. Если для конкретного сценария требуется обязательно актуальная проверка полиса, устаревший результат нельзя автоматически считать валидным.
 
@@ -83,7 +84,9 @@ text
 
 ### 2.2. Платёжный шлюз
 
-Правильная схема отличается от 1С:
+Правильная схема отличается от 1С
+
+```text
 POST /payment
 |
 v
@@ -111,26 +114,26 @@ PAYMENT_PENDING
 |
 v
 Reconciliation
-
-text
+```
 
 #### Ключевой принцип
 
 **Нельзя делать:**
-POST payment
-↓ timeout
-POST payment
-↓ timeout
-POST payment
 
-text
+```text
+POST payment
+↓ timeout
+POST payment
+↓ timeout
+POST payment
+```
 
 Это может привести к двойному списанию.
 
 При timeout повторяется только безопасная операция:
+
 GET payment/status/{paymentId}
 
-text
 
 Сам `POST /payment` должен иметь **Idempotency-Key**, чтобы даже повторная доставка одного и того же бизнес-запроса не создавала вторую финансовую операцию.
 
@@ -156,6 +159,8 @@ Circuit Breaker позволяет быстро прекратить обращ�
 ## 4. Механизм работы Circuit Breaker
 
 Используем классическую модель из трёх состояний:
+
+```text
 +---------+
 | CLOSED |
 +----+----+
@@ -181,8 +186,7 @@ SUCCESS ERROR
 | |
 v v
 CLOSED OPEN
-
-text
+```
 
 ### CLOSED
 - Нормальный режим.
@@ -203,6 +207,8 @@ text
 В этом состоянии запросы в 1С не отправляются.
 
 Это предотвращает ситуацию:
+
+```text
 1С перегружена
 ↓
 ошибки
@@ -213,11 +219,13 @@ Retry
 ↓
 ещё большая перегрузка
 ↓
-полный отказ
+полный Brady
 
-text
+```
 
 Circuit Breaker разрывает этот цикл:
+
+```text
 1С отказала
 ↓
 Circuit OPEN
@@ -225,8 +233,7 @@ Circuit OPEN
 запросы к 1С прекращаются
 ↓
 Fallback
-
-text
+```
 
 ### HALF-OPEN
 Через 30 секунд разрешаются несколько пробных запросов.
@@ -241,6 +248,8 @@ text
 Предлагается выделить отдельный **Policy Service** и разместить перед 1С распределённый кэш **Redis**.
 
 ### Целевая схема
+
+```text
 Mobile App
 |
 | HTTPS
@@ -258,8 +267,7 @@ Redis Cache 1С: Полисы
 ^ ^
 | |
 +------------------+
-
-text
+```
 
 **Policy Service** становится единственной точкой доступа мобильного контура к 1С.
 
@@ -276,6 +284,8 @@ text
 ### Как это снижает нагрузку
 
 При каждом запросе:
+
+```text
 Mobile App
 ↓
 API Gateway
@@ -283,25 +293,31 @@ API Gateway
 Policy Service
 ↓
 Redis
-
-text
+```
 
 Если в кэше есть допустимый результат:
+
 Redis HIT
+
 ↓
+
 Ответ
+
 1С вообще не вызывается.
 
-text
 
 Только при **Cache MISS**:
+
 Redis MISS
+
 ↓
+
 Circuit Breaker
+
 ↓
+
 1С
 
-text
 
 Таким образом, количество запросов к 1С становится существенно меньше количества запросов мобильного приложения.
 
@@ -310,87 +326,7 @@ text
 ## 6. C4 Level 1 — целевая архитектура
 
 ```plantuml
-@startuml
-!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
 
-LAYOUT_WITH_LEGEND()
-
-title Здоровье+ — C4 Level 1: снижение нагрузки на 1С «Полисы»
-
-Person(patient, "Пациент",
-    "Пользователь мобильного приложения")
-
-System_Boundary(healthplus, "Здоровье+ — мобильный контур") {
-
-    System(app, "Мобильное приложение",
-        "iOS / Android")
-
-    System(api, "API Gateway",
-        "HTTPS/REST, JWT, Rate Limiting, Request ID")
-
-    System(policy, "Policy Service",
-        "Проверка полиса, Retry, Circuit Breaker, Fallback")
-
-    System(cache, "Policy Cache",
-        "Redis, кэш результатов проверки полиса")
-}
-
-System_Ext(onec, "1С: Полисы",
-    "Legacy-система. Проверка валидности полиса ДМС")
-
-System_Ext(schedule, "Расписание",
-    "Java / REST / PostgreSQL")
-
-System_Ext(crm, "CRM",
-    "Java / REST / PostgreSQL")
-
-Rel(patient, app,
-    "Использует")
-
-Rel(app, api,
-    "HTTPS/REST")
-
-Rel(api, policy,
-    "REST: проверка полиса")
-
-Rel(policy, cache,
-    "GET/SET: результат проверки")
-
-Rel(policy, onec,
-    "HTTP: проверка полиса\nтолько при Cache MISS")
-
-Rel(api, schedule,
-    "REST: запись к врачу")
-
-Rel(api, crm,
-    "REST: данные пациента")
-
-note right of policy
-Защита 1С:
-
-Timeout = 3 sec
-Retry = 2
-Backoff = 1s / 3s
-Circuit Breaker
-Rate Limit
-Concurrency Limit
-Fallback
-end note
-
-note right of cache
-Основной механизм разгрузки:
-
-Cache HIT
-→ 1С не вызывается
-
-Cache MISS
-→ обращение к 1С
-
-TTL определяется
-бизнес-требованиями
-end note
-
-@enduml
 7. Потоки работы Policy Service
 Cache Hit
 text
