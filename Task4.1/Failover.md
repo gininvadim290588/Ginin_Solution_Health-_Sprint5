@@ -163,11 +163,11 @@ v
 +------+------+
 |
 +----------+----------+
-| |
+|         |
 SUCCESS ERROR
-| |
-v v
-CLOSED OPEN
+|.        |
+v.        v
+OPEN.   CLOSED
 ```
 
 ### CLOSED
