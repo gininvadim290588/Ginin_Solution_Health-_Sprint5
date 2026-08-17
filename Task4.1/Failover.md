@@ -391,12 +391,10 @@ Mobile App → API Gateway → Policy Service → 1С
 
 ## 8. Итог
 
-Система
-Главный риск | Решение |
-|---|---|
-| 1С «Полисы»Перегрузка, зависания, каскадный отказ	Circuit Breaker + Cache + Rate/Concurrency Limit + Timeout |
-		
-| Платёжный шлюз  | Двойное списание и неизвестный статус платежа	Idempotency + Status Inquiry + Reconciliation + Timeout
+| Система | Главный риск | Основной механизм защиты |
+|---|---|---|
+| 1С «Полисы» | Перегрузка, зависания, каскадный отказ | Circuit Breaker + Cache + Rate/Concurrency Limit + Timeout |
+| Платёжный шлюз | Двойное списание и неизвестный статус платежа | Idempotency + Status Inquiry + Reconciliation + Timeout |
 
 Приоритет Circuit Breaker — 1С. Её отказ напрямую способен вызвать каскадную деградацию интеграционного контура, а известный предел >50 RPS делает защиту от повторных и избыточных запросов критически важной.
 
