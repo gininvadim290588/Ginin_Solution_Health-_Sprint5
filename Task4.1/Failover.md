@@ -162,12 +162,12 @@ v
 | HALF-OPEN |
 +------+------+
 |
-+----------+----------+
-|         |
-SUCCESS ERROR
-|.        |
-v.        v
-OPEN.   CLOSED
++----------+
+|          |
+SUCCESS  ERROR
+|          |
+v          v
+OPEN     CLOSED
 ```
 
 ### CLOSED
