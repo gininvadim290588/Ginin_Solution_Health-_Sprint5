@@ -357,17 +357,22 @@ GET /api/v1/appointments?status=upcoming&limit=20&offset=0
 GET /api/v1/appointments?status=upcoming&limit=20&offset=20
 
 GET /api/v1/appointments?status=upcoming&limit=20&offset=40
+
 Параметры:
 
-limit — количество записей на странице;
-offset — количество пропускаемых записей;
-total — общее количество записей;
-hasNext — наличие следующей страницы.
-Для данного endpoint offset-пагинация подходит, поскольку список записей одного пациента обычно относительно небольшой. Ограничение limit <= 100 защищает backend от чрезмерно больших запросов.
+- limit — количество записей на странице;
+- offset — количество пропускаемых записей;
+- total — общее количество записей;
+- hasNext — наличие следующей страницы.
+- 
+Для данного endpoint offset-пагинация подходит, поскольку список записей одного пациента обычно относительно небольшой.
+
+Ограничение limit <= 100 защищает backend от чрезмерно больших запросов.
 
 Для стабильности страниц используется детерминированная сортировка:
 
 appointmentDateTime ASC, id ASC
+
 Если в будущем объём данных существенно вырастет, можно перейти на cursor-based pagination.
 
 ### 4. Версионирование API
@@ -398,12 +403,12 @@ patientId не передаётся клиентом:
 
 API Gateway дополнительно должен обеспечивать:
 
-TLS;
-rate limiting;
-проверку JWT;
-request size limits;
-request/correlation ID;
-аудит обращений к персональным данным.
+- TLS;
+- rate limiting;
+- проверку JWT;
+- request size limits;
+- request/correlation ID;
+- аудит обращений к персональным данным.
 
 ### 6. Https коды
 
