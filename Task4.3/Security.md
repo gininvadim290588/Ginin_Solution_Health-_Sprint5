@@ -216,7 +216,6 @@ SQL не должен формироваться конкатенацией по
        |  Payment    |
        |  Gateway    |
        +-------------+
-```
 +-------------------------------------------------------+
 | Identity Provider                                     |
 | OAuth 2.0 + OpenID Connect + Authorization Code PKCE |
